@@ -121,7 +121,7 @@ class DataPreprocessor():
         
     def remove_emojis(self):
         """
-        Retains only expression related emojis
+        Retains and demojizes only expression related emojis
         """
         emoji_whitelist = [
             "😀", "😃", "😄", "😁", "😆", "😅", "😂", "😊", "😇", "🙂",
@@ -139,23 +139,23 @@ class DataPreprocessor():
         # Pattern to match all emojis
         emoji_set = set(emoji.EMOJI_DATA.keys())
         
-        def whitelist_and_remove(tweet):
-            return ''.join(char for char in tweet if char in emoji_whitelist or char not in emoji_set)
+        def remove_and_demojize(tweet):
+            tweet = ''.join(char for char in tweet if char in emoji_whitelist or char not in emoji_set)
+            tweet = emoji.demojize(tweet, delimiters=(" ", " ")) # demojize the retained tweets to capture the sentiment
+            return tweet
         
         column_to_use = 'cleaned_content' if 'cleaned_content' in self.df.columns else 'content'
-        self.df['cleaned_content'] = self.df[column_to_use].apply(whitelist_and_remove)
+        self.df['cleaned_content'] = self.df[column_to_use].apply(remove_and_demojize)
         
 
     def clean_text(self):
         """
-        Cleans text data by removing punctuation, stopwords, and applying lemmatization.
+        Cleans the tweet by removing punctuation, stopwords, and applying lemmatization.
         """
         nltk.download('stopwords')
         stop_words = set(stopwords.words('english'))
 
-        def clean(tweet): # deemojizes the tweet, removes punctuation, stop words, and lemmatizes the tweet
-            # Converts emojis to text, e.g., "😊" becomes ":smiling_face:"
-            # tweet = emoji.demojize(tweet, delimiters=(" ", " "))
+        def clean(tweet):
             # Remove punctuation BUT RETAINS NUMBERS and $
             tweet = re.sub(r'[^a-zA-Z0-9\s$]', '', tweet)
             # Tokenize
