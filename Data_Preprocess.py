@@ -11,6 +11,9 @@ import re
 from bs4 import BeautifulSoup
 import emoji
 from urllib.parse import urlparse
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('wordnet')
 
 
 # The class designed for data preprocessing in NLP pipeline.
@@ -159,6 +162,7 @@ class DataPreprocessor():
             # Remove punctuation BUT RETAINS NUMBERS and $
             tweet = re.sub(r'[^a-zA-Z0-9\s$]', '', tweet)
             # Tokenize
+            nltk.download('punkt')
             words = nltk.word_tokenize(tweet)
             # Remove stop words
             # words = [word for word in words if word.lower() not in stop_words]
