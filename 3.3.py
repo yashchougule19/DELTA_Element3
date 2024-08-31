@@ -15,7 +15,7 @@
 
 # # 0. Import Libraries 
 
-# In[97]:
+# In[1]:
 
 
 # For preprocessing
@@ -24,9 +24,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from DataPreprocess import DataPreprocessor
+from Data_Preprocess import DataPreprocessor
 
-from ClassificationScores import ClassificationEvaluator
+from Classification_Scores import ClassificationEvaluator
+
+from Data_Augmentation import DataAugmentor
+
+from DistilBERT import DistilBERTSentimentAnalyzer, run_pretrained_analysis, run_finetuned_analysis
 
 # For VaderSentiment
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -45,12 +49,57 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.regularizers import l2
 from sklearn.model_selection import train_test_split
 from sklearn.utils import class_weight
+from tensorflow.keras.metrics import AUC, Precision, Recall
+from keras_tuner import BayesianOptimization
 
 # For DistilBERT
-import torch
-from transformers import DistilBertTokenizer, DistilBertForSequenceClassification, TextClassificationPipeline, TrainingArguments, Trainer
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+# import torch
+# from transformers import DistilBertTokenizer, DistilBertForSequenceClassification, TextClassificationPipeline, TrainingArguments, Trainer
+# from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
 
+
+# The **DataPreprocessor** class imported from **Data_Preprocess.py** is an all in one class with methods required for processing the raw tweets before feeding them to any model. Methods are defined individually to foster flexibility, allowing customization of data perprocessing steps per the requirement of specific model. At the same time, improves both, redability of the code and understandability of the underlying actions.
+# 
+# Below is the description of each method briefing its logic and reason.
+# 
+# 1. **remove_spam_content( )**<br>
+# Tweets that are highly similar in their content (similarity>80%>) are removed. Bots often generate repeated content. I went through filtered out tweets and noticed that almost all of them were irrlevent to bitcoin and crypto.
+# 
+# 2. **remove_hashtags( )**<br> 
+# Initially, I removed all hashtags from tweets, but later realized that complete removal is inappropriate as it causes relevant data loss. *This method retains top 30 most frequent hashtags as all of them are related to bitcoin and crypto. Noticed significant improvement in classification after its implementation.*
+# 
+# 3. **remove_link( )**<br>
+# Removes link(s) from the tweet, if any.
+# 
+# 4. **remove_whitespace_html( )**<br>
+# Removes all the whitespace and HTML tags from the tweet.
+# 
+# 5. **remove_emojis( )**<br>
+# Similar t hashtahs, but *only expression and emotion related emojis are retained while all others removed. The retained emojis are then demojized as the add sentiment to the tweet.*
+# 
+# 6. **rlean( )**<br>
+# This method removes punctuations and stop words and applies lemmatization. *It's worth to note that a significant performance improvement is observed when numbers and '$' character is retained in the tweet. This makes sense as the tweets are relaed to bitcoin and many of them have its price mentioned.*
+# 
+
+# The **ClassificationEvaluator** class imported from **Classification_Scores.py** is to evaluate the performance of a classification model particularly focusing on how well it handles imbalanced classes. It has methods defined are to print classification report, plot confusion matrix, ROC-AUC Curve and Precision-Recall curve.
+# 
+# 1. **evaluate( )**<br>
+# Prints the classification report with precision, recall, and F1-score for each class, along with overall accuracy.
+# 
+# 2. **plot_confusion_matrix( )**<br>
+# Plots a confusion matrix heatmap showing the count of true positive, true negative, false positive, and false negative predictions.
+# 
+# 3. **plot_roc_auc( )<br>**
+# Plots the ROC curve and calculates the area under the curve (AUC). Helps to understand the trade-off between true positive rate (recall) and false positive rate (1-specificity) for different threshold settings.
+# 
+# 4. **plot_precision_recall_auc( )<br>**
+# First of all, flips the labels to consider minority class for plotting. Calculates and plots the precision-recall curve for the minority class (negative class) and calculates the area under this curve (PR AUC).
+
+# The **DataAugmentor** class imported from **Data_Augmentation.py** has the method 'augment_data' defined that takes the dataframe, and the number of samples as the argument, performs the augmentation of the minority class and returns the dataframe. It's implemented to tackle the problem of call imbalance.
+# 
+# Note: Since data augmentation is computationally expensive, I worked it out in colab and saved the augmented dataset in the directory with the name 'augmented train data.csv'. From there I imported it directly in the notebook to run the train experiments on RNN and fine tuned DistilBERT.
+# 
+# More on data augmentation and class imbalance at the end of the section 1.Data Preprocessing.
 
 # # 1. Data Preprocessing
 
@@ -60,7 +109,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipe
 
 
 # Importing the train and test datasets
-train_df = pd.read_parquet('btc_tweets_train.parquet.gzip').reset_index()
+train_df = pd.read_parquet('btc_tweets_train.parquet.gzip').reset_index() # read_csv("augmented train data.csv")
 test_df = pd.read_parquet('btc_tweets_test.parquet.gzip').reset_index()
 
 
@@ -104,94 +153,56 @@ train_df['sentiment'] = train_df['sentiment'].astype(int)
 test_df['sentiment'] = test_df['sentiment'].astype(int)
 
 
-# The DataPreprocessor class imported from DataPreprocess.py is an all in one class that has various methods required for processing the raw tweets before feeding them to any model. Methods are defined individually to foster flexibility, allowing customization of data perprocessing steps per the advantages and limitations of the specific model. At the same time, doing so improves both, redability of the code and understandability of the underlying process.
-# 
-# Below is the description of each method briefing the logic and reason.
-# 
-# 1. **Remove_spam_content( )**<br>
-# Tweets that are highly similar in their content (similarity>80%>) are removed. Bots often generate repeated content. I went through filtered out tweets and noticed that almost all of them were irrlevent to bitcoin and crypto.
-# 
-# 2. **Remove_hashtags( )**<br> 
-# Initially, I removed all hashtags from tweets, but later realized that complete removal is inappropriate as it causes relevant data loss. *This method retains top 30 most frequent hashtags as all of them are related to bitcoin and crypto. Noticed significant improvement in classification after its implementation.*
-# 
-# 3. **Remove_link( )**<br>
-# Removes link(s) from the tweet, if any.
-# 
-# 4. **Remove_whitespace_html( )**<br>
-# Removes all the whitespace and HTML tags from the tweet.
-# 
-# 5. **Remove_emojis( )**<br>
-# Similar t hashtahs, but *only expression and emotion related emojis are retained while all others removed. The retained emojis are then demojized as the add sentiment to the tweet.*
-# 
-# 6. **Clean( )**<br>
-# This method removes punctuations and stop words and applies lemmatization. *It's wrth to note that a significant performance improvement is observed when numbers and '$' character is retained in the tweet. This makes sense as the tweets are relaed to bitcoin and many of them have its price mentioned.*
-# 
+# ### 1.2. A note on handling Class Imbalance
 
-# ### A few trials
+# Far as I have understood the dataset and this task, 'Call Imbalance' is the problem of utmost importance that's having significant influence on right from data preprocessing to performance evaluation and fine tuning. From all the available strategieg, below are a few that I found suiting the characteristics of our dataset and followed them to pacify the impact of class imbalance
+# 
+# 1. **Using different Metrics**<br>
+# Accuracy is not the best metric in the presence of class imbalance. Hence throughout the notebook, considered other metrics like precision, recall, f1-score, ROC_AUC curve and PR curve.
+# 
+# 2. **Resampling Techniques**<br>
+# - **Undersampling**: not preferred since the dataset is small and undersampling will result in loss of important information.
+# - **Oversampling**: In this I particularly followed 2 approaches:-<br>
+# **SMOTE** was rejected since it performs best with numerical data. I still vectorized the text and tested it, but the results were not impressive. Both recall and precision for minority (negative) class worsened.<br>
+# **Data Augmentation** I used a pre-trained 'bert-base-uncased' model to generate additioanl 1000 minority class examples from the existing (270approx) samples. Trained RNN model with the 'augmented train df.csv' and below is its classification report and confusion matrix. Precision and Recall even after data augmentation is well below 50% although AUC shuowed slight improvement from 0.59 to 0.61. I think the reason is extremly limited number of minority samples to regenerate from. Hence the regenerated samples significantly lacked variation needed to train the model. <br>
+# ![alt text](<augmented df classification perf.png>)
+# ![alt text](<augmented df confusion matrix.png>)
+# 
+# 3. **Using Class Weights**
+# Assigned higher weight to minority class so that the model pays more attention to them while training. Good starting point is the multiple of minority class such that 'minority class samples x multiple = majority class samples'. This is the most convenent way that yielded promising results.
+# 
+# **Colclusion:** With different in place, use of class weights was the most effective in improving the classification metrics for the negative class. Also it is the most convenient and flexible way to work with. I have followed this approach to help training with an imbalanced dataset.
+
+# In the cell below is the code to perform data augmentation. However, since it was not giving any improved results, I havent used the augmented dataset for training. The code only sits to demonstrate the implementation. A copy of augmented data sits in the folder for review, if needed.
+
+# In[21]:
+
+
+# # Clean the tweets to get cleaned augmented tweets
+# augmenter_data_preprocess = DataPreprocessor(df=train_df, content_column='content')
+# augmented_train_df = augmenter_data_preprocess.preprocess(remove_spam=True, remove_link=True, remove_hashtags=True, remove_whitespace_html=True,remove_emoji=True)
+
+# # To augment the dataset
+# augmenter = DataAugmentor()
+# augmented_train_df = augmenter.augment_data(df=augmented_train_df)
+# augmented_train_df.to_csv('augmented train data.csv')
+
+
+# # 2. Benchmark: vaderSentiment Dictionary
+
+# For sentiment analysis using VADER, it's best to apply VADER to the raw, uncleaned text to leverage its strengths in handling informal language, punctuation, and emojis. However, when it comes to Links, it is best to remove them. Links are irrelevent to the sentiment and could add unnecessary noise, potentially influencing the sentiment. Also after multiple iterations, it was obseved that most of the emojis were adding no value but the noise. Hence only expression specific emojis are retained and ret all are removed. 
+
+# The preprocessing pipeline for vaderSentiment
+# - Clean the tweets
+# - Then apply vader sentiment dictionary on the cleaned tweets
+# - Initialize the vaderSentiment analyzer
+# - Apply it on the cleaned tweets and get the compound scores
+# - Set the threshold to transform the compound scores to positive class (1) or negative class (0)
+# - Generate classification report
+
+# ### 2.1. Clean the tweets for VaderSentiment
 
 # In[8]:
-
-
-# def extract_special_characters(text):
-#     # Regular expression to match special characters
-#     return re.findall(r'[^a-zA-Z0-9\s]', text)
-
-# # Extract special characters from the selected column (e.g., 'content')
-# df = train_df.copy()
-# df['special_chars'] = df['content'].apply(extract_special_characters)
-
-# # Flatten the list of special characters and count their frequency
-# special_chars_list = df['special_chars'].sum()
-# special_chars_count = Counter(special_chars_list)
-
-# # Get the most common special characters
-# most_common_special_chars = special_chars_count.most_common()
-
-# # Display the results
-# for char, count in most_common_special_chars:
-#     print(f"'{char}': {count}")
-
-
-# In[9]:
-
-
-# def extract_emojis(text):
-#     return ''.join(char for char in text if char in emoji.EMOJI_DATA)
-
-# # Extract emojis from the selected column (e.g., 'content')
-# #column_to_use = 'cleaned_content' if 'cleaned_content' in df.columns else 'content'
-# df = train_df.copy()
-# df['emojis'] = df['content'].apply(extract_emojis)
-
-# # Flatten the list of emojis and count the frequency of each emoji
-# emoji_list = df['emojis'].sum()
-# emoji_count = Counter(emoji_list)
-
-# # Get the top 50 most used emojis
-# top_50_emojis = emoji_count.most_common(200)
-
-# # Display the results
-# for emoji_char, count in top_50_emojis:
-#     print(f"{emoji_char}: {count}")
-
-
-# **NOTE: both the cleaned datasets above are still imbalanced with True values largly outnumbered than False. The imbalance needs to be taken care of by assigning class weights dring model training.**
-
-# # 2. Benchmark: vaderSentiment Sentiment Dictionary
-
-# For sentiment analysis using VADER, it's best to apply VADER to the raw, uncleaned text to leverage its strengths in handling informal language, punctuation, and emojis. However, when it comes to Links, it is best to remove them. Links are irrelevent to the sentiment and could add unnecessary noise, potentially influencing the sentiment. Also after multiple iterations, it was obseved that most of the emojis are adding no value but noise. Hence only expression specific emojis are retained and ret all are removed. 
-
-# The preprocessing flow for vaderSentiment
-# - Remove spam tweets
-# - Remove links
-# - Remove unnecessary hashtags
-# - Remove whitespace and HTML tags
-# - Remove unnecessary emojis
-# - Then apply vader sentiment dictionary on the cleaned tweets
-
-# ### 2.1. Getting the dataset ready for VaderSentiment
-
-# In[ ]:
 
 
 vader_test_df = test_df.copy()
@@ -200,10 +211,10 @@ vader_test_df = test_df.copy()
 vader_test_datapreprocessor = DataPreprocessor(df=test_df, content_column='content')
 
 
-# In[ ]:
+# In[9]:
 
 
-# Getting the dataset ready by removing spam, unnecessary hashtags, links, whitespace, HTML tags and emojis
+# Getting the tweets ready by removing spam, unnecessary hashtags, links, whitespace, HTML tags and emojis
 vader_test_df = vader_test_datapreprocessor.preprocess( remove_spam=True,
                                                         remove_hashtags=True, 
                                                         remove_link=True, 
@@ -211,13 +222,13 @@ vader_test_df = vader_test_datapreprocessor.preprocess( remove_spam=True,
                                                         remove_emoji=True )
 
 
-# In[ ]:
+# In[10]:
 
 
 vader_test_df.head()
 
 
-# In[ ]:
+# In[11]:
 
 
 # look over an example to see if the tweets are cleaned as expected
@@ -225,9 +236,9 @@ index = 43
 vader_test_df['content'].iloc[index], vader_test_df['cleaned_content'].iloc[index], vader_test_df['sentiment'][index]
 
 
-# ### 2.2. Fitting the VaderSentiment on cleaned test data
+# ### 2.2. Fit the VaderSentiment on cleaned tweets in test data
 
-# In[ ]:
+# In[12]:
 
 
 # Initialize the VADER sentiment analyzer
@@ -253,15 +264,15 @@ def classify_sentiment(score):
 vader_test_df['vader_sentiment_label'] = vader_test_df['vader_sentiment'].apply(classify_sentiment).astype(int)
 
 
-# In[ ]:
+# In[13]:
 
 
 vader_test_df.head()
 
 
-# ### 2.3. Evaluating the vaderSentiment classification performance
+# ### 2.3. Generate classification report for vaderSentiment
 
-# In[ ]:
+# In[14]:
 
 
 # Initializing the classification performance evaluator class for vader
@@ -272,15 +283,18 @@ vader_performance_evaluator.evaluate()
 vader_performance_evaluator.plot_confusion_matrix()
 
 
+# 
+# #### vaderSentiment Classification Report Interpretation
+# 
 # - VaderSentiment is better off in identifying positive sentiments.
-# - Recall 92% indicates model captures most positive instances.
+# - Recall 92% indicates model captures most of the positive tweets.
 # - This is expected anyways, since the dataset is imbalanced.
 
 # # 3. RNN 
 
 # ### 3.1. Getting the dataset ready for training the embeddings
 
-# In[98]:
+# In[15]:
 
 
 # Initialize the DataPreprocessor class for DistilBERT
@@ -288,17 +302,30 @@ rnn_train_datapreprocessor = DataPreprocessor(df=train_df, content_column='conte
 rnn_test_datapreprocessor = DataPreprocessor(df=test_df, content_column='content')
 
 
-# In[99]:
+# In[16]:
 
 
-rnn_train_df = rnn_train_datapreprocessor.preprocess(remove_spam=True, remove_hashtags=True, remove_link=True, remove_whitespace_html=True, remove_emoji=True, clean_text=True, balance_classes=False)
-rnn_test_df = rnn_test_datapreprocessor.preprocess(remove_spam=True, remove_hashtags=True, remove_link=True, remove_whitespace_html=True, remove_emoji=True, clean_text=True, balance_classes=False)
+# tweets in both, train and test datsasets are cleaned
+rnn_train_df = rnn_train_datapreprocessor.preprocess(remove_spam=True, 
+                                                     remove_hashtags=True, 
+                                                     remove_link=True, 
+                                                     remove_whitespace_html=True, 
+                                                     remove_emoji=True, 
+                                                     clean_text=True)
+
+rnn_test_df = rnn_test_datapreprocessor.preprocess(remove_spam=True, 
+                                                   remove_hashtags=True, 
+                                                   remove_link=True, 
+                                                   remove_whitespace_html=True, 
+                                                   remove_emoji=True, 
+                                                   clean_text=True)
 
 
 # In[ ]:
 
 
-i = 83
+# Exmple to check if cleaning is successful
+i = 43
 rnn_train_df['content'][i], rnn_train_df['cleaned_content'][i], rnn_train_df['sentiment'][i]
 
 
@@ -317,7 +344,20 @@ nltk.download('punkt')
 nltk.download('wordnet')
 
 
-# In[100]:
+# #### Parameter selection in the FastText training
+# 
+# Monitored model performance changing the following parameters and finally selected those that RNN permormed best with.
+# 
+# - vector_size=50:  Dimensionality of the word vectors (embeddings) that the model wil learn. RNN model performed best with the size of 50.
+# 
+# - window=5: Model will look at the 5 words before and after the target word in a sentence during training.
+# 
+# - min_count=1:Any word that appearing even once in the corpus will be included in the vocabulary. Set to 1 since the dataset is small.
+# 
+# - sg=0: 0 means that the model will use the Continuous Bag of Words (CBOW) algorithm, where the context (surrounding words) predicts the target word.<br>
+# If sg=1, the model will use the Skip-gram algorithm, where the target word predivts the context.
+
+# In[17]:
 
 
 # Tokenize the cleaned tweets (split by spaces)
@@ -326,14 +366,8 @@ tokenized_tweets = [tweet.split() for tweet in rnn_train_df['cleaned_content']]
 # Train FastText model using Gensim's implementation
 fasttext_model = FastText(sentences=tokenized_tweets, vector_size=50, window=5, min_count=1, sg=0, epochs=10)
 
-# Save the model
-#fasttext_model.save("fasttext_vs50.model")
 
-# Load the model (for future use)
-#fasttext_model = FastText.load("fasttext_vs50.model")
-
-
-# In[ ]:
+# In[18]:
 
 
 # Example: Get vector for a word 
@@ -345,12 +379,11 @@ print(f"Words similar to 'bitcoin': {fasttext_model.wv.most_similar('bitcoin')}"
 
 # ### 3.3. Building and Training the RNN model
 
+# In[19]:
+
+
 # Tweet length plot to decide on sequence length.
 
-# In[101]:
-
-
-# List of tweets to be used for rnn training
 tweets = rnn_train_df['cleaned_content'].to_list()
 
 # Tokenize each tweet to calculate its length
@@ -368,23 +401,17 @@ plt.show()
 
 # Sequence length of 50 farly covers all the tweets.
 
-# In[102]:
+# In[20]:
 
 
 # Parameters
 max_sequence_length = 50
 embedding_dim = 50
-embedding_matrix = fasttext_model.wv.vectors # Create embedding matrix
+embedding_matrix = fasttext_model.wv.vectors # embedding matrix to be passed as trained weights in the RNN embedding layer
 vocab_size = len(fasttext_model.wv)
 
 
-# In[ ]:
-
-
-#fasttext_model.wv.vector_size, len(tokenizer.word_counts), vocab_size, tokenizer.word_index.items()
-
-
-# In[103]:
+# In[21]:
 
 
 # Tokenize the tweets
@@ -399,20 +426,21 @@ test_sequences = tokenizer.texts_to_sequences(rnn_test_df['cleaned_content'])
 padded_test_sequences = pad_sequences(test_sequences, maxlen=max_sequence_length, padding='post')
 
 
-# In[ ]:
+# In[22]:
 
 
-padded_test_sequences
+# An example look over
+padded_test_sequences[89]
 
 
-# In[ ]:
+# In[23]:
 
 
 # Dimension check
 padded_train_sequences.shape, rnn_train_df['sentiment'].shape
 
 
-# In[104]:
+# In[24]:
 
 
 # Split the data to training and validation
@@ -426,21 +454,49 @@ rnn_X_test = padded_test_sequences
 rnn_y_test = rnn_test_df['sentiment'].to_numpy()
 
 
-# In[105]:
+# - Class weights are calculated to instruct model to pay more attention to the minority class. Model performs fairly same when the weight for class 0 is incrementally changed from 2.6 to 3.1 after which it over predicts minority class imparing the model performance on majority class. 
+# - It is finally dictated by the classification objective to decide on which class is more important. The weights will be ajusted accordingly. In this notebook, weights with which model performs the best on both the classes are retained.
+
+# In[25]:
 
 
 # Calculate the class weights to handle imbalance
 class_weights = class_weight.compute_class_weight(class_weight='balanced', classes=np.unique(y_train), y=y_train)
 class_weights = dict(enumerate(class_weights))
 class_weights
+#class_weights = {0: 1, 1: 1}
 
 
-# Study about kernel_regularizer, learning_rate
+# ### RNN Model Structure and Features:
+# 
+# 1. Input Layer <br>
+# The model expects sequences of a specific length (max_sequence_length). This length corresponds to the number of tokens in each tweet i.e. text sequence.
+# 
+# 2. Embedding Layer<br>
+# Vocabulary Size (vocab_size): The total number of unique tokens.<br>
+# Embedding Dimension (embd_dim): Each word or token is represented as a vector of this length. Captures semantic information.<br>
+# Pretrained Weights (embedding_matrix): The embeddings are initialized with pretrained weights, such as those from FastText. By setting trainable=False, you ensure these embeddings are not updated during training, preserving the pretrained semantic knowledge.
+# RNN Layer:
+# 
+# 3. RNN Type (LSTM or GRU)<br> 
+# The model allows for flexibility in choosing between Long Short-Term Memory (LSTM) or Gated Recurrent Unit (GRU). 
+# LSTM is preferred for handling long sequences, while GRU is faster and has fewer parameters.
+# Units (64): The dimensionality of the output space for the RNN layer.
+# Kernel Regularizer (l2(0.02)): Adds a penalty on the weights to prevent overfitting. Encourages the model to learn simpler patterns.
+# Bidirectional Option:
+# 
+# 4. Bidirectional Layer (bidirectional=True/False)<br>
+# If True, wraps the RNN layer in a Bidirectional wrapper, allowing the model to learn from the sequence in both forward and backward directions.
+# Enhancinces the model's understanding of context.
+# 
+# 5. Dropout Layer<br>
+# Dropout (0.2): Randomly sets 20% of the inputs to zero during training to prevent overfitting. Makes the model more robust.
+# 
+# 6. Output Layer<br>
+# Dense Layer: A single unit with a sigmoid activation function suitable for binary classification tasks. Outputs probability for binary classification.
 
-# In[106]:
+# In[26]:
 
-
-#from tensorflow.keras.metrics import AUC, Precision, Recall
 
 # Build the RNN model
 def build_rnn_model(embd_dim, rnn_type='LSTM', bidirectional=False):
@@ -464,11 +520,11 @@ def build_rnn_model(embd_dim, rnn_type='LSTM', bidirectional=False):
     model.add(Dropout(0.2))
     model.add(Dense(1, activation = 'sigmoid', kernel_regularizer=l2(0.02)))
     
-    model.compile(optimizer=Adam(learning_rate=0.0001), loss='binary_crossentropy', metrics=['accuracy']) #, Precision(), Recall(), AUC()])
+    model.compile(optimizer=Adam(learning_rate=0.000196), loss='binary_crossentropy', metrics=['accuracy']) #, ['accuracy'], Precision(), , AUC(), Recall())
     return model
 
 
-# In[118]:
+# In[27]:
 
 
 # Initialize the model
@@ -476,22 +532,22 @@ model = build_rnn_model(embd_dim=embedding_dim, rnn_type='LSTM', bidirectional=F
 model.summary()
 
 
-# In[123]:
+# In[28]:
 
 
 # Train the model
-early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-history = model.fit(X_train, y_train, epochs=40, batch_size=16, validation_data=(X_val, y_val), class_weight=class_weights, callbacks=[early_stopping])
+early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+history = model.fit(X_train, y_train, epochs=40, batch_size=12, validation_data=(X_val, y_val), class_weight=class_weights, callbacks=[early_stopping])
 
 
-# In[124]:
+# In[29]:
 
 
 # Evaluate the model
 loss, accuracy = model.evaluate(rnn_X_test, rnn_y_test)
 
 
-# In[125]:
+# In[30]:
 
 
 # Predicting sentiments on new tweets
@@ -500,23 +556,10 @@ rnn_predictions = model.predict(rnn_X_test)
 rnn_predictions_discrete = (rnn_predictions >= 0.5).astype(int)  
 
 
-# In[ ]:
+# In[31]:
 
 
-# u = 24
-# rnn_predictions[u], rnn_predictions_discrete[u], rnn_y_test[u], rnn_test_df['cleaned_content'].iloc[u]
-
-
-# In[ ]:
-
-
-#rnn_predictions
-
-
-# In[126]:
-
-
-# Initializing the performance evaluator class for RNN
+# # Initializing the performance evaluator class for RNN
 rnn_performance_evaluator = ClassificationEvaluator(true_labels=rnn_y_test, 
                                                     predicted_labels=rnn_predictions_discrete, 
                                                     predicted_probs=rnn_predictions)
@@ -524,13 +567,112 @@ rnn_performance_evaluator = ClassificationEvaluator(true_labels=rnn_y_test,
 rnn_performance_evaluator.evaluate()
 rnn_performance_evaluator.plot_confusion_matrix()
 rnn_performance_evaluator.plot_roc_auc()
+rnn_performance_evaluator.plot_precision_recall_auc()
+
+
+# #### RNN Classification Report Interpretation
+# 
+# 1. Classification Report
+# - Mdodel's performance on class 1 (positive) is fairly good. However, all the three metrics, precision, recall and f1-score on class 0 need attention. This can be atrributed to the imbalance in the dataset with class 1 having more instances (387) than class 0 (96). The performance would have been better, if the model would have had more negative samples to learn from.
+# 
+# 2. ROC_AUC Curve
+# - The AUC of 0.58 suggests that the model has limited ability to distinguish between the positive and negative classes. Its marginally better than random guessing.
+# 
+# 3. PR Curve
+# - Low AUC (0.17) suggests poor model performance in distinguishing between the positive and negative classes for minority class.<br>
+# - Both precision and recall are low across different thresholds meaning a struggling model to identify minority class, resulting in may fasle positives and fasle negatives. Can be noticed in the confusion matrix.<br>
+
+# ### 3.4. Hyperparameter tuning
+
+# In[ ]:
+
+
+def build_hypermodel(hp):
+    model = Sequential()
+    model.add(Input(shape=(max_sequence_length,)))
+    model.add(Embedding(input_dim=vocab_size, 
+                        output_dim=embedding_dim,
+                        weights=[embedding_matrix],  
+                        trainable=False))
+    
+    # Choose between LSTM and GRU
+    rnn_type = hp.Choice('rnn_type', ['LSTM', 'GRU'])
+    rnn_units = 64 #hp.Int('rnn_units', min_value=32, max_value=128, step=32)
+    
+    if rnn_type == 'LSTM':
+        rnn_layer = LSTM(units=rnn_units, return_sequences=False, kernel_regularizer=l2(hp.Float('l2', 0.0, 0.1, step=0.01)))
+    else:
+        rnn_layer = GRU(units=rnn_units, return_sequences=False, kernel_regularizer=l2(hp.Float('l2', 0.0, 0.1, step=0.01)))
+    
+    # Add Bidirectional wrapper if specified
+    if hp.Boolean('bidirectional'):
+        model.add(Bidirectional(rnn_layer))
+    else:
+        model.add(rnn_layer)
+    
+    model.add(Dropout(rate=hp.Float('dropout', 0.1, 0.5, step=0.1)))
+    model.add(Dense(1, activation='sigmoid', kernel_regularizer=l2(hp.Float('l2_dense', 0.0, 0.1, step=0.01))))
+    
+    # Compile the model
+    model.compile(optimizer=Adam(learning_rate=hp.Float('learning_rate', 1e-5, 1e-3, sampling='log')),
+                  loss='binary_crossentropy', 
+                  metrics=['accuracy'])
+    return model
+
+
+# In[ ]:
+
+
+tuner = BayesianOptimization(
+    build_hypermodel,
+    objective='val_accuracy',
+    max_trials=100,  # You can adjust this based on your computational resources
+    executions_per_trial=1,  # Averages the results over multiple runs
+    directory='bayesian_optimization',
+    project_name='rnn_tuning'
+)
+
+
+# In[ ]:
+
+
+X_val.shape
+
+
+# In[ ]:
+
+
+# Early stopping callback
+hpt_early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+
+# # Start the search
+tuner.search(X_train, y_train,
+             epochs=10,
+             validation_data=(X_val, y_val),
+             batch_size=32,
+             callbacks=[hpt_early_stopping])
+
+
+# # Get the best hyperparameters and model
+best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
+best_model = tuner.get_best_models(num_models=1)[0]
+
+# Print the best hyperparameters
+print(f"Best RNN type: {best_hps.get('rnn_type')}")
+print(f"Best number of RNN units: {best_hps.get('rnn_units')}")
+print(f"Use bidirectional: {best_hps.get('bidirectional')}")
+print(f"Best dropout rate: {best_hps.get('dropout')}")
+print(f"Best learning rate: {best_hps.get('learning_rate')}")
+
+# Summary of the best model
+best_model.summary()
 
 
 # # 4. DistilBERT
 
-# ### 4.1. Data preprocessing: DistilBERT
+# ### 4.1. Clean the tweets for DistilBERT
 
-# In[ ]:
+# In[8]:
 
 
 # Initialize the DataPreprocessor class for DistilBERT
@@ -538,14 +680,23 @@ dtb_train_datapreprocessor = DataPreprocessor(df=train_df, content_column='conte
 dtb_test_datapreprocessor = DataPreprocessor(df=test_df, content_column='content')
 
 
-# In[ ]:
+# In[9]:
 
 
-dtb_train_df = dtb_train_datapreprocessor.preprocess(remove_spam=True, remove_hashtags=True, remove_emoji=True, remove_link=True, remove_whitespace_html=True)
-dtb_test_df = dtb_test_datapreprocessor.preprocess(remove_spam=True, remove_hashtags=True, remove_emoji=True, remove_link=True, remove_whitespace_html=True)
+dtb_train_df = dtb_train_datapreprocessor.preprocess(remove_spam=True, 
+                                                     remove_hashtags=True, 
+                                                     remove_emoji=True, 
+                                                     remove_link=True, 
+                                                     remove_whitespace_html=True)
+
+dtb_test_df = dtb_test_datapreprocessor.preprocess(remove_spam=True, 
+                                                   remove_hashtags=True, 
+                                                   remove_emoji=True, 
+                                                   remove_link=True, 
+                                                   remove_whitespace_html=True)
 
 
-# In[ ]:
+# In[34]:
 
 
 i = 7
@@ -558,7 +709,7 @@ dtb_test_df['content'][i], dtb_test_df['cleaned_content'][i], dtb_test_df['senti
 dtb_test_df.head()
 
 
-# In[ ]:
+# In[10]:
 
 
 # Split the data to training and validation
@@ -572,110 +723,53 @@ dtb_X_test = dtb_test_df['cleaned_content']
 dtb_y_test = dtb_test_df['sentiment']
 
 
-# In[ ]:
+# ### 4.2. Predict with pre-trained and fine-tuned DistilBERT
 
+# The entire pipeline of generating predicitons using a pre-trained DistilBERT and then fine-tuned DistilBERT is implemented in a class 'DistilBERTSentimentAnalyzer' imported from 'DistilBERT.py'. Here is the detailed description of the approach.
+# 
+# #### **Pre-trained Analysis Pipeline:**
+# 
+# 1. **Tokenization:**
+#    - 'pretrained_tokenizer' to tokenize and preprocess the input tweets.
+#    - Convert the tweets into a format suitable for the model. Padds and truncates the tweets to specified maximum length.
+# 
+# 2. **Prediction:**
+#    - Pass the tokenized input to the 'pretrained_model'.
+#    - The model outputs logits, which represent the raw predictions.
+#    - 'torch.argmax' to convert the logits into predicted class labels.
+# 
+# 3. **Evaluation:**
+#    - Evaluate the performance of the pre-trained model on the test data using the predicted labels.
+# 
+# **Function:**
+# - 'run_pretrained_analysis(analyzer, test_texts)'
+# 
+# #### **Fine-tuned Analysis Pipeline:**
+# 
+# 1. **Tokenization:**
+#    - 'finetuned_tokenizer' to tokenize and preprocess the training, validation, and test tweets.
+#    - Prepares the data for training and evaluation.
+# 
+# 2. **Prepare Labels:**
+#    - Convert the training and validation labels into tensors.
+# 
+# 3. **Initial Training (with Frozen Layers):**
+#    - Freeze all layers of the 'finetuned_model' except for the output layer.
+#    - Set up training arguments using 'TrainingArguments'.
+#    - Define training and validation datasets.
+#    - Train the model using the 'Trainer' class, updating only the output layer initially.
+# 
+# 4. **Gradual Unfreezing:**
+#    - Unfreeze all layers of the model to allow for further fine-tuning.
+#    - Continue training the model with all layers unfrozen to adjust pre-trained features for the specific task.
+# 
+# 5. **Evaluation:**
+#    - Evaluate the fine-tuned model on the test data using the updated weights.
+# 
+# **Function:**
+# - 'run_finetuned_analysis(analyzer, train_texts, train_labels, val_texts, val_labels, test_texts)'
 
-from transformers import (AutoTokenizer, AutoModelForSequenceClassification, 
-                          DistilBertTokenizer, DistilBertForSequenceClassification, 
-                          pipeline, Trainer, TrainingArguments)
-from torch.utils.data import Dataset
-
-# Define a Dataset class
-class SentimentDataset(Dataset):
-    def __init__(self, encodings, labels):
-        self.encodings = encodings
-        self.labels = labels
-
-    def __getitem__(self, idx):
-        item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
-        item['labels'] = torch.tensor(self.labels[idx])
-        return item
-
-    def __len__(self):
-        return len(self.labels)
-
-# A class for handling pre-trained and fine-tuned DistilBERT models
-class DistilBERTSentimentAnalyzer:
-    def __init__(self, pretrained_model_name, finetuned_model_name, max_length=32):
-        self.pretrained_tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name)
-        self.pretrained_model = AutoModelForSequenceClassification.from_pretrained(pretrained_model_name)
-        self.finetuned_tokenizer = DistilBertTokenizer.from_pretrained(finetuned_model_name)
-        self.finetuned_model = DistilBertForSequenceClassification.from_pretrained(finetuned_model_name)
-        self.max_length = max_length
-
-    def tokenize_data(self, texts, tokenizer):
-        return tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=self.max_length,
-            return_tensors='pt'
-        )
-
-    def predict(self, tokens, model):
-        with torch.no_grad():
-            outputs = model(**tokens)
-        return torch.argmax(outputs.logits, dim=1)
-
-    def evaluate_model(self, model, tokens):
-        with torch.no_grad():
-            outputs = model(**tokens)
-        return torch.argmax(outputs.logits, dim=1)
-
-    def fine_tune(self, train_tokens, train_labels, val_tokens, val_labels, epochs=1, batch_size=16):
-        # Set up training arguments
-        training_args = TrainingArguments(
-            output_dir='./results',
-            num_train_epochs=epochs,
-            per_device_train_batch_size=batch_size,
-            per_device_eval_batch_size=batch_size,
-            logging_dir='./logs',
-        )
-
-        # Define training and evaluation datasets
-        train_dataset = SentimentDataset(train_tokens, train_labels)
-        val_dataset = SentimentDataset(val_tokens, val_labels)
-
-        # Train DistilBERT model
-        trainer = Trainer(
-            model=self.finetuned_model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=val_dataset,
-        )
-
-        trainer.train()
-
-# Utility functions for the analysis
-def run_pretrained_analysis(analyzer, test_texts):
-    tokens = analyzer.tokenize_data(test_texts, analyzer.pretrained_tokenizer)
-    return analyzer.predict(tokens, analyzer.pretrained_model)
-
-def run_finetuned_analysis(analyzer, train_texts, train_labels, val_texts, val_labels, test_texts):
-    #X_train, y_train, X_val, y_val = train_test_split(train_texts, test_size=0.2)
-    train_tokens = analyzer.tokenize_data(train_texts, analyzer.finetuned_tokenizer)
-    val_tokens = analyzer.tokenize_data(val_texts, analyzer.finetuned_tokenizer)
-    test_tokens = analyzer.tokenize_data(test_texts, analyzer.finetuned_tokenizer)
-
-    # Convert labels to tensors
-    train_labels_tensor = torch.tensor(list(map(int, train_labels)), dtype=torch.long)
-    val_labels_tensor = torch.tensor(list(map(int, val_labels)), dtype=torch.long)
-
-    # Fine-tune the model
-    analyzer.fine_tune(train_tokens, train_labels_tensor, val_tokens, val_labels_tensor)
-
-    # Evaluate on the test set
-    return analyzer.evaluate_model(analyzer.finetuned_model, test_tokens)
-    
-
-
-# In[ ]:
-
-
-dtb_y_train.values
-
-
-# In[ ]:
+# In[11]:
 
 
 # Initialize the analyzer
@@ -687,7 +781,7 @@ analyzer = DistilBERTSentimentAnalyzer(
 # Example usage with your data
 pt_dtb_predictions = run_pretrained_analysis(analyzer, dtb_test_df['cleaned_content'].to_list())
 
-# Fine-tune and evaluate
+# # Fine-tune and evaluate
 ft_dtb_predictions = run_finetuned_analysis(
     analyzer,
     train_texts = dtb_X_train.to_list(),
@@ -698,18 +792,25 @@ ft_dtb_predictions = run_finetuned_analysis(
 )
 
 
-# In[ ]:
+# ### 4.3. Classification report for pre-trained DistilBERT
 
+# In[12]:
+
+
+# The pre-trained DistilBERT maps positive class to 0 and negative class to 1, which is opposite of our labels. Hence flipped them
+flipped_predictions = 1 - pt_dtb_predictions
 
 # Initializing the performance evaluator class for pre-trained DistilBERT
 pt_dtb_performance_evaluator = ClassificationEvaluator(true_labels=dtb_test_df['sentiment'].to_list(), 
-                                                       predicted_labels=pt_dtb_predictions)
+                                                       predicted_labels=flipped_predictions)
 
 pt_dtb_performance_evaluator.evaluate()
 pt_dtb_performance_evaluator.plot_confusion_matrix()
 
 
-# In[ ]:
+# ### 4.4. Classification report for fine-tuned DistilBERT
+
+# In[13]:
 
 
 # Initializing the performance evaluator class for pre-trained DistilBERT
@@ -720,177 +821,61 @@ ft_dtb_performance_evaluator.evaluate()
 ft_dtb_performance_evaluator.plot_confusion_matrix()
 
 
-# ### 4.2. Pre-trained DistilBERT
+# # 5. Final Comparison
 
-# In[ ]:
+# ### 5.1. Code
 
+# In[14]:
 
-pt_dtb_tokenizer = AutoTokenizer.from_pretrained('DT12the/distilbert-sentiment-analysis')
-pt_dtb_model = AutoModelForSequenceClassification.from_pretrained('DT12the/distilbert-sentiment-analysis')
 
+from sklearn.metrics import classification_report
+import tabulate
 
-# In[ ]:
+def get_classification_scores(true_labels, predicted_labels):
+    report = classification_report(true_labels, predicted_labels, output_dict=True)
+    # Extract the relevant scores
+    scores = {
+        'precision_0': report['0']['precision'],
+        'recall_0': report['0']['recall'],
+        'f1_score_0': report['0']['f1-score'],
+        'precision_1': report['1']['precision'],
+        'recall_1': report['1']['recall'],
+        'f1_score_1': report['1']['f1-score'],
+    }
+    return scores
 
+model_predictions = {
+    'vaderSentiment': vader_test_df['vader_sentiment_label'],
+    'RNN (LSTM 64)': rnn_predictions_discrete, 
+    'Pre-trained DistilBERT': flipped_predictions,
+    'Fine-tuned DistilBERT': ft_dtb_predictions,  
+}
 
-pt_dtb_test_tokens = pt_dtb_tokenizer(text=dtb_test_df['cleaned_content'].to_list(),
-                                 padding=True,
-                                 truncation=True,
-                                 max_length=32,
-                                 return_tensors='pt')
+# True labels
+true_labels = dtb_test_df['sentiment'].to_list()
 
+results = []
 
-# In[ ]:
+for model_name, predictions in model_predictions.items():
+    scores = get_classification_scores(true_labels, predictions)
+    scores['model'] = model_name
+    results.append(scores)
 
+# Convert the results to a DataFrame
+results_df = pd.DataFrame(results)
+results_df = results_df.set_index('model').map(lambda x: f"{x:.2f}")
 
-type(pt_dtb_test_tokens)
+# Convert DataFrame to table format
+comparison_table = tabulate(results_df, headers='keys', tablefmt='pretty', floatfmt='.3f')
 
 
-# In[ ]:
+# ### 5.2. Comparison Table
 
+# In[15]:
 
-with torch.no_grad():
-    pt_dtb_predictions = pt_dtb_model(**pt_dtb_test_tokens)
 
+print(comparison_table)
 
-# In[ ]:
 
-
-pt_dtb_predictions_discrete = torch.argmax(pt_dtb_predictions.logits, dim=1)
-
-
-# In[ ]:
-
-
-# Initializing the performance evaluator class for pre-trained DistilBERT
-pt_dtb_performance_evaluator = ClassificationEvaluator(true_labels=dtb_test_df['sentiment'].to_list(), 
-                                                       predicted_labels=pt_dtb_predictions_discrete)
-
-pt_dtb_performance_evaluator.evaluate()
-pt_dtb_performance_evaluator.plot_confusion_matrix()
-
-
-# ### 4.3. Fine-tuned DistilBERT
-
-# In[ ]:
-
-
-ft_dtb_tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased-finetuned-sst-2-english')
-ft_dtb_model = DistilBertForSequenceClassification.from_pretrained('distilbert-base-uncased-finetuned-sst-2-english')
-
-
-# In[ ]:
-
-
-sentiment_analysis = pipeline('sentiment-analysis',
-                              model = ft_dtb_model,
-                              tokenizer = ft_dtb_tokenizer,
-                              batch_size = 16)
-
-
-# In[ ]:
-
-
-# Tokenize the training and validation set
-ft_dtb_train_tokens = ft_dtb_tokenizer(
-    dtb_train_df['cleaned_content'].to_list(),
-    padding=True,
-    truncation=True,
-    max_length=32,  # Adjust this according to your sequence lengths
-    return_tensors='pt'
-)
-
-ft_dtb_test_tokens = ft_dtb_tokenizer(
-    dtb_test_df['cleaned_content'].to_list(),
-    padding=True,
-    truncation=True,
-    max_length=32,  # ⚠️ Adjust this if your sequences are longer or shorter, and explain why we did it that way
-    return_tensors='pt'
-)
-
-
-# In[ ]:
-
-
-# Convert the labels to a tensor
-labels_train = torch.tensor(list(map(int, dtb_train_df['sentiment'].values)), dtype=torch.long)
-labels_val = torch.tensor(list(map(int, dtb_test_df['sentiment'].values)), dtype=torch.long)
-
-
-# In[ ]:
-
-
-# Define a dataset class (optional, for clarity)
-class SentimentDataset(torch.utils.data.Dataset):
-    def __init__(self, encodings, labels):
-        self.encodings = encodings
-        self.labels = labels
-
-    def __getitem__(self, idx):
-        item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
-        item['labels'] = torch.tensor(self.labels[idx])
-        return item
-
-    def __len__(self):
-        return len(self.labels)
-
-
-# In[ ]:
-
-
-##### Set up training arguments
-training_args = TrainingArguments(
-    output_dir='./results',          # output directory
-    num_train_epochs=3,              # number of training epochs
-    per_device_train_batch_size=16,  # batch size for training
-    per_device_eval_batch_size=16,   # batch size for evaluation
-    logging_dir='./logs',            # directory for storing logs
-)
-
-
-# In[ ]:
-
-
-# Define training and evaluation datasets
-train_dataset = SentimentDataset(ft_dtb_train_tokens, labels_train)
-val_dataset = SentimentDataset(ft_dtb_test_tokens, labels_val) 
-
-
-# In[ ]:
-
-
-# Train DistilBERT model
-trainer = Trainer(
-    model=ft_dtb_model,              # the instantiated 🤗 Transformers model to be trained
-    args=training_args,              # training arguments, defined above
-    train_dataset=train_dataset,
-    eval_dataset=val_dataset,
-)
-
-trainer.train()
-
-
-# In[ ]:
-
-
-# Evaluate model on the test set
-# Disable gradient calculation for evaluation
-with torch.no_grad():
-    ft_dtb_predictions = ft_dtb_model(**ft_dtb_test_tokens)
-
-# Get the predicted class (0 or 1)
-ft_dtb_predictions_discrete = torch.argmax(ft_dtb_predictions.logits, dim=1)
-
-# Convert predictions to NumPy array for comparison
-# predictions_DTB = predictions_DTB.numpy()
-
-
-# In[ ]:
-
-
-# Initializing the performance evaluator class for pre-trained DistilBERT
-ft_dtb_performance_evaluator = ClassificationEvaluator(true_labels=dtb_test_df['sentiment'].to_list(), 
-                                                       predicted_labels=ft_dtb_predictions_discrete)
-
-ft_dtb_performance_evaluator.evaluate()
-ft_dtb_performance_evaluator.plot_confusion_matrix()
-
+# - The table compares the classification performane of all 4 models tracking their precision, recall and F1 score for both the classes.
+# - From the numbers, **Fine-tuned DistilBERT** is the best overall, consistently giving high scores in precision, recall, and F1 score for both categories. It outperforms other models, particularly the minority class, which is crucial in this imbalanced dataset.
